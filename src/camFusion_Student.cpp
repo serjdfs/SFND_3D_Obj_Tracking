@@ -4,6 +4,7 @@
 #include <numeric>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
+#include <set>
 
 #include "camFusion.hpp"
 #include "dataStructures.h"
@@ -52,7 +53,7 @@ void clusterLidarWithROI(std::vector<BoundingBox> &boundingBoxes, std::vector<Li
 
         // check wether point has been enclosed by one or by multiple boxes
         if (enclosingBoxes.size() == 1)
-        { 
+        {
             // add Lidar point to bounding box
             enclosingBoxes[0]->lidarPoints.push_back(*it1);
         }
@@ -73,7 +74,7 @@ void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, 
         cv::Scalar currColor = cv::Scalar(rng.uniform(0,150), rng.uniform(0, 150), rng.uniform(0, 150));
 
         // plot Lidar points into top view image
-        int top=1e8, left=1e8, bottom=0.0, right=0.0; 
+        int top=1e8, left=1e8, bottom=0.0, right=0.0;
         float xwmin=1e8, ywmin=1e8, ywmax=-1e8;
         for (auto it2 = it1->lidarPoints.begin(); it2 != it1->lidarPoints.end(); ++it2)
         {
@@ -106,7 +107,7 @@ void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, 
         sprintf(str1, "id=%d, #pts=%d", it1->boxID, (int)it1->lidarPoints.size());
         putText(topviewImg, str1, cv::Point2f(left-250, bottom+50), cv::FONT_ITALIC, 2, currColor);
         sprintf(str2, "xmin=%2.2f m, yw=%2.2f m", xwmin, ywmax-ywmin);
-        putText(topviewImg, str2, cv::Point2f(left-250, bottom+125), cv::FONT_ITALIC, 2, currColor);  
+        putText(topviewImg, str2, cv::Point2f(left-250, bottom+125), cv::FONT_ITALIC, 2, currColor);
     }
 
     // plot distance markers
@@ -133,26 +134,265 @@ void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, 
 // associate a given bounding box with the keypoints it contains
 void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, std::vector<cv::DMatch> &kptMatches)
 {
-    // ...
+    cv::KeyPoint left, right;
+    double sum = 0.0;
+    for(auto &kptMatch : kptMatches){
+        sum += kptMatch.distance;
+    }
+    sum /= kptMatches.size();
+
+    for(auto &kptMatch : kptMatches){
+        left = kptsPrev[kptMatch.trainIdx];
+        right = kptsCurr[kptMatch.queryIdx];
+        if(boundingBox.roi.contains(left.pt) && boundingBox.roi.contains(right.pt)){
+            if(sum <= kptMatch.distance)
+                boundingBox.kptMatches.push_back(kptMatch);
+        }
+    }
+
 }
 
 
 // Compute time-to-collision (TTC) based on keypoint correspondences in successive images
-void computeTTCCamera(std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, 
+void computeTTCCamera(std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr,
                       std::vector<cv::DMatch> kptMatches, double frameRate, double &TTC, cv::Mat *visImg)
 {
-    // ...
+    // compute distance ratios between all matched keypoints
+    vector<double> distRatios; // stores the distance ratios for all keypoints between curr. and prev. frame
+    for (auto it1 = kptMatches.begin(); it1 != kptMatches.end() - 1; ++it1)
+    { // outer kpt. loop
+
+        // get current keypoint and its matched partner in the prev. frame
+        cv::KeyPoint kpOuterCurr = kptsCurr.at(it1->trainIdx);
+        cv::KeyPoint kpOuterPrev = kptsPrev.at(it1->queryIdx);
+
+        for (auto it2 = kptMatches.begin() + 1; it2 != kptMatches.end(); ++it2)
+        { // inner kpt.-loop
+
+            double minDist = 100.0; // min. required distance
+
+            // get next keypoint and its matched partner in the prev. frame
+            cv::KeyPoint kpInnerCurr = kptsCurr.at(it2->trainIdx);
+            cv::KeyPoint kpInnerPrev = kptsPrev.at(it2->queryIdx);
+
+            // compute distances and distance ratios
+            double distCurr = cv::norm(kpOuterCurr.pt - kpInnerCurr.pt);
+            double distPrev = cv::norm(kpOuterPrev.pt - kpInnerPrev.pt);
+
+            if (distPrev > std::numeric_limits<double>::epsilon() && distCurr >= minDist)
+            { // avoid division by zero
+
+                double distRatio = distCurr / distPrev;
+                distRatios.push_back(distRatio);
+            }
+        } // eof inner loop over all matched kpts
+    }     // eof outer loop over all matched kpts
+
+    // only continue if list of distance ratios is not empty
+    if (distRatios.size() == 0)
+    {
+        TTC = NAN;
+        return;
+    }
+
+    std::sort(distRatios.begin(), distRatios.end());
+    double medianDistRatio = 0;
+
+    if (distRatios.size() % 2 != 0)
+        medianDistRatio = (double)distRatios[distRatios.size() / 2.0];
+    else
+        medianDistRatio = (distRatios[(distRatios.size() - 1) / 2.0] + distRatios[distRatios.size() / 2.0]) / 2.0;
+
+    double dT = 1 / frameRate;
+    TTC = -dT / (1 - medianDistRatio);
+    cout << "TTC Camera: " << TTC << endl;
 }
 
 
 void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
                      std::vector<LidarPoint> &lidarPointsCurr, double frameRate, double &TTC)
 {
-    // ...
+    // auxiliary variables
+    double dT = 1 / frameRate; // time between two measurements in seconds
+
+    // find closest distance to Lidar points
+    double minXPrev = 1e9, minXCurr = 1e9;
+    for(auto it=lidarPointsPrev.begin(); it!=lidarPointsPrev.end(); ++it) {
+        minXPrev = minXPrev>it->x ? it->x : minXPrev;
+    }
+
+    for(auto it=lidarPointsCurr.begin(); it!=lidarPointsCurr.end(); ++it) {
+        minXCurr = minXCurr>it->x ? it->x : minXCurr;
+    }
+
+    // compute TTC from both measurements
+    TTC = minXCurr * dT / (minXPrev-minXCurr);
+    cout << "TTC Lidar: " << TTC << endl;
 }
 
-
+/*
 void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bbBestMatches, DataFrame &prevFrame, DataFrame &currFrame)
 {
-    // ...
+
+    int match_counts[currFrame.boundingBoxes.size()][prevFrame.boundingBoxes.size()];
+    for(auto &match:matches){
+        for(auto &prev : prevFrame.boundingBoxes){
+            for(auto &curr : currFrame.boundingBoxes){
+                auto query_pt = prevFrame.keypoints[match.queryIdx].pt;
+                auto train_pt = currFrame.keypoints[match.trainIdx].pt;
+                if(prev.roi.contains(query_pt)&& curr.roi.contains(train_pt)){
+                    ++match_counts[curr.boxID][prev.boxID];
+                }
+            }
+        }
+    }
+
+    static const int MIN_BBOX_MATCH_THSLD = 1;
+
+    bool processed[prevFrame.boundingBoxes.size()];
+    for(int i = 0; i < currFrame.boundingBoxes.size(); ++i){
+        int max = 0, argmax = 0;
+        for(int j = 0; j < prevFrame.boundingBoxes.size(); ++j){
+            if(match_counts[i][j]>max){
+                max = match_counts[i][j];
+                argmax = j;
+            }
+        }
+        if(max > MIN_BBOX_MATCH_THSLD && !processed[argmax]){
+            bbBestMatches.insert({argmax, i});
+            processed[argmax] = true;
+        }
+    }
+
+
+    int izq = 100, der = 100;
+    std::multimap<int,int> prevIdx, currIdx;
+    cv::KeyPoint left, right;
+    for(auto it1 = matches.begin(); it1 != matches.end(); ++it1)
+    {
+        ++it1;
+        left = prevFrame.keypoints[it1->trainIdx];
+        right = currFrame.keypoints[it1->queryIdx];
+        std::vector<BoundingBox>::iterator it2, it3;
+        for(it2 = prevFrame.boundingBoxes.begin(); it2 != prevFrame.boundingBoxes.end(); ++it2)
+        {
+            if(it2->roi.contains(left.pt))
+            {
+                izq = it2->boxID;
+                prevIdx.insert({izq,1});
+            }
+        }
+        for(it3 = currFrame.boundingBoxes.begin(); it3 != currFrame.boundingBoxes.end(); ++it3)
+        {
+            if(it3->roi.contains(right.pt))
+            {
+                der = it3->boxID;
+                currIdx.insert({der,1});
+            }
+        }
+
+    }
+
+    // Counting the box Ids
+    std::vector<int> prevCount, currCount, prevCopy, currCopy;
+    std::vector<BoundingBox>::iterator it_prev, it_curr;
+    for(it_prev = prevFrame.boundingBoxes.begin(); it_prev != prevFrame.boundingBoxes.end();++it_prev)
+    {
+        prevCount.push_back(prevIdx.count(it_prev->boxID));
+    }
+    for(it_curr = currFrame.boundingBoxes.begin(); it_curr != currFrame.boundingBoxes.end();++it_curr)
+    {
+        currCount.push_back(currIdx.count(it_curr->boxID));
+    }
+    prevCopy = prevCount;
+    currCopy = currCount;
+    sort(prevCopy.begin(), prevCopy.end(),greater<int>());
+    sort(currCopy.begin(), currCopy.end(),greater<int>());
+    std::vector<int>::iterator itc;
+
+    for(int i = 0; i < prevCopy.size();i++)
+    {
+        itc = std::find (prevCount.begin(), prevCount.end(), prevCopy[i]);
+        int iz = itc - prevCount.begin();
+        itc = std::find (currCount.begin(), currCount.end(), currCopy[i]);
+        int de = itc - currCount.begin();
+
+        bbBestMatches.insert({prevFrame.boundingBoxes[iz].boxID,currFrame.boundingBoxes[de].boxID});
+    }
+
+}
+
+*/
+
+void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bbBestMatches,
+                        DataFrame &prev_frame, DataFrame &curr_frame) {
+
+    int match_counts[curr_frame.boundingBoxes.size()][prev_frame.boundingBoxes.size()];
+    for(auto &match:matches){
+        for(auto &prev : prev_frame.boundingBoxes){
+            for(auto &curr : curr_frame.boundingBoxes){
+                auto query_pt = prev_frame.keypoints[match.queryIdx].pt;
+                auto train_pt = curr_frame.keypoints[match.trainIdx].pt;
+                if(prev.roi.contains(query_pt) && curr.roi.contains(train_pt)){
+                    ++match_counts[curr.boxID][prev.boxID];
+                }
+            }
+        }
+    }
+
+    static const int MIN_BBOX_MATCH_THSLD = 1;
+
+    bool processed[prev_frame.boundingBoxes.size()];
+    for(int i = 0; i < curr_frame.boundingBoxes.size(); ++i){
+        int max = 0, argmax = 0;
+        for(int j = 0; j < prev_frame.boundingBoxes.size(); ++j){
+            if(match_counts[i][j]>max){
+                max = match_counts[i][j];
+                argmax = j;
+            }
+        }
+        if(max > MIN_BBOX_MATCH_THSLD && !processed[argmax]){
+            bbBestMatches.insert({argmax, i});
+            processed[argmax] = true;
+        }
+    }
+
+    /* Now visualize bounding box matches */
+    // copy the previous frame and current frame
+    cv::Mat prv_img = prev_frame.cameraImg.clone();
+    cv::Mat cur_img = curr_frame.cameraImg.clone();
+
+    const auto red = cv::Scalar(0, 0, 255);
+    const auto green = cv::Scalar(0, 255, 0);
+    const auto blue = cv::Scalar(255, 0, 0);
+
+    cv::putText(prv_img, "Previous Frame", cv::Point(50, 50), cv::FONT_ITALIC, 0.75, red, 2);
+    cv::putText(cur_img, "Current Frame", cv::Point(50, 50), cv::FONT_ITALIC, 0.75, blue, 2);
+
+    std::vector<std::pair<cv::Point2i,cv::Point2i>> lines;
+
+    for (auto const &kv : bbBestMatches) {
+        std::cout << "BBOX MATCH IDS: " << std::to_string(kv.first) + " -> " + std::to_string(kv.second) << std::endl;
+
+        auto prv_rect = prev_frame.boundingBoxes[kv.first].roi;
+        cv::rectangle(prv_img, cv::Point(prv_rect.x, prv_rect.y), cv::Point(prv_rect.x + prv_rect.width, prv_rect.y + prv_rect.height), red, 1);
+
+        auto cur_rect = curr_frame.boundingBoxes[kv.second].roi;
+        cv::rectangle(cur_img,cv::Point(cur_rect.x, cur_rect.y),cv::Point(cur_rect.x + cur_rect.width, cur_rect.y + cur_rect.height),blue,1);
+
+        lines.emplace_back(cv::Point(prv_rect.x, prv_rect.y), cv::Point(cur_rect.x, cur_rect.y+prv_img.size().height) );
+    }
+
+    cv::Mat concat_img;
+    cv::vconcat(prv_img, cur_img, concat_img);
+
+    for(auto &end_pts : lines ){
+        cv::line(concat_img, end_pts.first, end_pts.second, green, 1);
+    }
+
+    string windowName = "Matching Bounding Boxes";
+    cv::namedWindow(windowName, cv::WINDOW_AUTOSIZE);
+    cv::imshow(windowName, concat_img);
+    cv::waitKey(0); // wait for key to be pressed
+
 }
