@@ -230,104 +230,14 @@ void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
     cout << "TTC Lidar: " << TTC << endl;
 }
 
-/*
-void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bbBestMatches, DataFrame &prevFrame, DataFrame &currFrame)
-{
-
-    int match_counts[currFrame.boundingBoxes.size()][prevFrame.boundingBoxes.size()];
-    for(auto &match:matches){
-        for(auto &prev : prevFrame.boundingBoxes){
-            for(auto &curr : currFrame.boundingBoxes){
-                auto query_pt = prevFrame.keypoints[match.queryIdx].pt;
-                auto train_pt = currFrame.keypoints[match.trainIdx].pt;
-                if(prev.roi.contains(query_pt)&& curr.roi.contains(train_pt)){
-                    ++match_counts[curr.boxID][prev.boxID];
-                }
-            }
-        }
-    }
-
-    static const int MIN_BBOX_MATCH_THSLD = 1;
-
-    bool processed[prevFrame.boundingBoxes.size()];
-    for(int i = 0; i < currFrame.boundingBoxes.size(); ++i){
-        int max = 0, argmax = 0;
-        for(int j = 0; j < prevFrame.boundingBoxes.size(); ++j){
-            if(match_counts[i][j]>max){
-                max = match_counts[i][j];
-                argmax = j;
-            }
-        }
-        if(max > MIN_BBOX_MATCH_THSLD && !processed[argmax]){
-            bbBestMatches.insert({argmax, i});
-            processed[argmax] = true;
-        }
-    }
-
-
-    int izq = 100, der = 100;
-    std::multimap<int,int> prevIdx, currIdx;
-    cv::KeyPoint left, right;
-    for(auto it1 = matches.begin(); it1 != matches.end(); ++it1)
-    {
-        ++it1;
-        left = prevFrame.keypoints[it1->trainIdx];
-        right = currFrame.keypoints[it1->queryIdx];
-        std::vector<BoundingBox>::iterator it2, it3;
-        for(it2 = prevFrame.boundingBoxes.begin(); it2 != prevFrame.boundingBoxes.end(); ++it2)
-        {
-            if(it2->roi.contains(left.pt))
-            {
-                izq = it2->boxID;
-                prevIdx.insert({izq,1});
-            }
-        }
-        for(it3 = currFrame.boundingBoxes.begin(); it3 != currFrame.boundingBoxes.end(); ++it3)
-        {
-            if(it3->roi.contains(right.pt))
-            {
-                der = it3->boxID;
-                currIdx.insert({der,1});
-            }
-        }
-
-    }
-
-    // Counting the box Ids
-    std::vector<int> prevCount, currCount, prevCopy, currCopy;
-    std::vector<BoundingBox>::iterator it_prev, it_curr;
-    for(it_prev = prevFrame.boundingBoxes.begin(); it_prev != prevFrame.boundingBoxes.end();++it_prev)
-    {
-        prevCount.push_back(prevIdx.count(it_prev->boxID));
-    }
-    for(it_curr = currFrame.boundingBoxes.begin(); it_curr != currFrame.boundingBoxes.end();++it_curr)
-    {
-        currCount.push_back(currIdx.count(it_curr->boxID));
-    }
-    prevCopy = prevCount;
-    currCopy = currCount;
-    sort(prevCopy.begin(), prevCopy.end(),greater<int>());
-    sort(currCopy.begin(), currCopy.end(),greater<int>());
-    std::vector<int>::iterator itc;
-
-    for(int i = 0; i < prevCopy.size();i++)
-    {
-        itc = std::find (prevCount.begin(), prevCount.end(), prevCopy[i]);
-        int iz = itc - prevCount.begin();
-        itc = std::find (currCount.begin(), currCount.end(), currCopy[i]);
-        int de = itc - currCount.begin();
-
-        bbBestMatches.insert({prevFrame.boundingBoxes[iz].boxID,currFrame.boundingBoxes[de].boxID});
-    }
-
-}
-
-*/
-
 void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bbBestMatches,
                         DataFrame &prev_frame, DataFrame &curr_frame) {
 
     int match_counts[curr_frame.boundingBoxes.size()][prev_frame.boundingBoxes.size()];
+    for (int i = 0; i < curr_frame.boundingBoxes.size(); i++)
+        for (int j = 0; j < prev_frame.boundingBoxes.size(); j++)
+            match_counts[i][j] = 0;
+
     for(auto &match:matches){
         for(auto &prev : prev_frame.boundingBoxes){
             for(auto &curr : curr_frame.boundingBoxes){
@@ -357,7 +267,7 @@ void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bb
         }
     }
 
-    /* Now visualize bounding box matches */
+    /* Now visualize bounding box matches
     // copy the previous frame and current frame
     cv::Mat prv_img = prev_frame.cameraImg.clone();
     cv::Mat cur_img = curr_frame.cameraImg.clone();
@@ -394,5 +304,5 @@ void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bb
     cv::namedWindow(windowName, cv::WINDOW_AUTOSIZE);
     cv::imshow(windowName, concat_img);
     cv::waitKey(0); // wait for key to be pressed
-
+    */
 }
