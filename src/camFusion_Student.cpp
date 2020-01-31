@@ -251,7 +251,6 @@ void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bb
     }
 
     static const int MIN_BBOX_MATCH_THSLD = 1;
-
     bool processed[prev_frame.boundingBoxes.size()];
     for(int i = 0; i < curr_frame.boundingBoxes.size(); ++i){
         int max = 0, argmax = 0;
